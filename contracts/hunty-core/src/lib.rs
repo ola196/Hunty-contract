@@ -637,6 +637,37 @@ impl HuntyCore {
         Ok(())
     }
 
+    /// Verifies a candidate answer without recording progress or emitting events.
+    pub fn preview_answer(
+        env: Env,
+        hunt_id: u64,
+        clue_id: u32,
+        player: Address,
+        answer: String,
+    ) -> bool {
+        let Some(hunt) = Storage::get_hunt(&env, hunt_id) else {
+            return false;
+        };
+
+        let current_time = env.ledger().timestamp();
+        if !hunt.is_active(current_time) {
+            return false;
+        }
+
+        if Storage::get_player_progress(&env, hunt_id, &player).is_none() {
+            return false;
+        }
+
+        let Some(clue) = Storage::get_clue(&env, hunt_id, clue_id) else {
+            return false;
+        };
+        let Ok(submitted_hash) = Self::normalize_and_hash_answer(&env, &answer) else {
+            return false;
+        };
+
+        submitted_hash == clue.answer_hash
+    }
+
     /// This function verifies the submitted answer by hashing it and comparing
     /// with the stored answer hash. If correct, updates player progress and emits
     /// success events. If incorrect, emits an analytics event and returns an error.
