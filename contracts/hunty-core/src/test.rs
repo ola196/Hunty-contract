@@ -814,6 +814,26 @@ mod test {
     }
 
     #[test]
+    fn test_add_clue_zero_points() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        env.mock_all_auths();
+        let creator = Address::generate(&env);
+        let title = String::from_str(&env, "Hunt");
+        let description = String::from_str(&env, "Desc");
+        let question = String::from_str(&env, "Q");
+        let answer = String::from_str(&env, "a");
+
+        let err = with_core_contract(&env, |env, _cid| {
+            let hid = HuntyCore::create_hunt(env.clone(), creator, title, description, None, None)
+                .unwrap();
+            HuntyCore::add_clue(env.clone(), hid, question, answer, 0, false).unwrap_err()
+        });
+
+        assert_eq!(err, HuntErrorCode::InvalidPoints);
+    }
+
+    #[test]
     fn test_activate_hunt_success() {
         let env = Env::default();
         env.ledger().set_timestamp(1_700_000_000);

@@ -27,6 +27,7 @@ pub enum HuntErrorCode {
     RewardDistributionFailed = 20,
     NoRewardsConfigured = 21,
     NoRequiredClues = 22,
+    InvalidPoints = 23,
 }
 
 #[derive(Debug)]
@@ -51,6 +52,7 @@ pub enum HuntError {
     RewardDistributionFailed { hunt_id: u64 },
     NoRewardsConfigured { hunt_id: u64 },
     NoRequiredClues { hunt_id: u64 },
+    InvalidPoints,
 }
 
 impl fmt::Display for HuntError {
@@ -123,6 +125,9 @@ impl fmt::Display for HuntError {
             HuntError::NoRequiredClues { hunt_id } => {
                 write!(f, "Hunt {} has no required clues; at least one required clue must exist before activation", hunt_id)
             }
+            HuntError::InvalidPoints => {
+                write!(f, "Invalid points: points must be >= 1")
+            }
         }
     }
 }
@@ -150,6 +155,7 @@ impl From<HuntError> for HuntErrorCode {
             HuntError::RewardDistributionFailed { .. } => HuntErrorCode::RewardDistributionFailed,
             HuntError::NoRewardsConfigured { .. } => HuntErrorCode::NoRewardsConfigured,
             HuntError::NoRequiredClues { .. } => HuntErrorCode::NoRequiredClues,
+            HuntError::InvalidPoints => HuntErrorCode::InvalidPoints,
         }
     }
 }

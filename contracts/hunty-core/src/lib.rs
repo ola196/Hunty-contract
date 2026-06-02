@@ -161,6 +161,9 @@ impl HuntyCore {
         if qlen == 0 || qlen > MAX_QUESTION_LENGTH {
             return Err(HuntErrorCode::InvalidQuestion);
         }
+        if points == 0 {
+            return Err(HuntErrorCode::InvalidPoints);
+        }
         let answer_hash =
             Self::normalize_and_hash_answer(&env, &answer).map_err(HuntErrorCode::from)?;
         let clue_id = Storage::next_clue_id(&env, hunt_id);
