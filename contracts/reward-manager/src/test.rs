@@ -1088,4 +1088,78 @@ mod test {
             assert_eq!(result, Err(RewardErrorCode::NotInitialized));
         });
     }
+    // ========== set_hunty_core / hunt_id validation ==========
+
+    #[test]
+    fn test_create_reward_pool_without_hunty_core_is_caller_trusted() {
+        // Without set_hunty_core, any hunt_id is accepted (caller-trusted mode).
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, _, _) = setup(&env);
+        let creator = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            // hunt_id 9999 is arbitrary — no HuntyCore is configured, so it passes.
+            let result = RewardManager::create_reward_pool(env.clone(), creator.clone(), 9999, 0);
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn test_create_reward_pool_rejects_unknown_hunt_id_when_hunty_core_set() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+
+        // Register a dummy contract as "hunty_core". Any call to get_hunt_info on it
+        // will fail (no matching function), which simulates a missing hunt.
+        let fake_hunty_core = env.register(RewardManager, ());
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+        });
+        env.mock_all_auths_allowing_non_root_auth();
+        env.as_contract(&contract_id, || {
+            RewardManager::set_hunty_core(env.clone(), admin.clone(), fake_hunty_core.clone())
+                .unwrap();
+        });
+        env.mock_all_auths_allowing_non_root_auth();
+        env.as_contract(&contract_id, || {
+            // hunt_id 42 doesn't exist in the fake core — expect HuntNotFound.
+            let result = RewardManager::create_reward_pool(env.clone(), creator.clone(), 42, 0);
+            assert_eq!(result, Err(RewardErrorCode::HuntNotFound));
+        });
+    }
+
+    #[test]
+    fn test_set_hunty_core_admin_only() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let fake_core = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+        });
+        env.mock_all_auths_allowing_non_root_auth();
+        env.as_contract(&contract_id, || {
+            // Non-admin should be rejected.
+            let result =
+                RewardManager::set_hunty_core(env.clone(), attacker.clone(), fake_core.clone());
+            assert_eq!(result, Err(RewardErrorCode::Unauthorized));
+        });
+        env.mock_all_auths_allowing_non_root_auth();
+        env.as_contract(&contract_id, || {
+            // Admin succeeds.
+            RewardManager::set_hunty_core(env.clone(), admin.clone(), fake_core.clone()).unwrap();
+            assert_eq!(
+                crate::storage::Storage::get_hunty_core(&env),
+                Some(fake_core)
+            );
+        });
+    }
 }
