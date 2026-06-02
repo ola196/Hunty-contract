@@ -264,6 +264,13 @@ pub struct RewardClaimedEvent {
     pub nft_awarded: bool,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RewardManagerSetEvent {
+    pub old_address: Option<Address>,
+    pub new_address: Address,
+}
+
 /// Emitted when a clue is added. Does not expose the answer hash.
 #[contracttype]
 #[derive(Clone, Debug)]

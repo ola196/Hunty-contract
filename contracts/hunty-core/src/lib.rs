@@ -5,7 +5,7 @@ use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, Hunt,
     HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
     HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
+    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig, RewardManagerSetEvent,
 };
 use reward_manager::RewardErrorCode;
 use soroban_sdk::{
@@ -399,7 +399,14 @@ impl HuntyCore {
 
     /// Sets the RewardManager contract address for cross-contract reward distribution.
     pub fn set_reward_manager(env: Env, reward_manager: Address) {
+        let old_address = Storage::get_reward_manager(&env);
         Storage::set_reward_manager(&env, &reward_manager);
+        let event = RewardManagerSetEvent {
+            old_address,
+            new_address: reward_manager.clone(),
+        };
+        env.events()
+            .publish((Symbol::new(&env, "RewardManagerSet"),), event);
     }
 
     /// Completes a hunt for a player and distributes rewards.
