@@ -2124,7 +2124,7 @@ mod test {
     }
 
     #[test]
-    fn test_get_hunt_leaderboard_empty() {
+    fn test_get_hunt_leaderboard_with_0_registered_players() {
         let env = Env::default();
         env.ledger().set_timestamp(1_700_000_000);
         env.mock_all_auths();
