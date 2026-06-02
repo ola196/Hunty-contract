@@ -56,6 +56,8 @@ pub struct Clue {
     pub answer_hashes: Vec<BytesN<32>>,
     pub points: u32,
     pub is_required: bool,
+    /// Difficulty multiplier (1-10). Points earned = points * difficulty.
+    pub difficulty: u8,
 }
 
 /// Clue info returned by get_clue/list_clues. Excludes answer hash.
@@ -66,6 +68,8 @@ pub struct ClueInfo {
     pub question: String,
     pub points: u32,
     pub is_required: bool,
+    /// Difficulty multiplier (1-10).
+    pub difficulty: u8,
 }
 
 #[contracttype]
@@ -320,26 +324,8 @@ pub struct ClueAddedEvent {
     pub creator: Address,
     pub points: u32,
     pub is_required: bool,
-    pub public_question: bool,
-}
-
-/// Emitted when a clue is removed from a draft hunt.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct ClueRemovedEvent {
-    pub hunt_id: u64,
-    pub clue_id: u32,
-    pub creator: Address,
-}
-
-/// Emitted when alternative acceptable answers are added to an existing clue.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct ClueAliasesAddedEvent {
-    pub hunt_id: u64,
-    pub clue_id: u32,
-    pub creator: Address,
-    pub aliases_count: u32,
+    /// Difficulty multiplier (1-10).
+    pub difficulty: u8,
 }
 
 /// Emitted when a player registers for an active hunt.
