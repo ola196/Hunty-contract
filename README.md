@@ -6,6 +6,9 @@
 
 Hunty is a decentralized scavenger hunt game built on Stellar/Soroban. Create thrilling scavenger hunts with multiple clues and challenges, engage players in immersive treasure hunts, and reward them with XLM tokens or exclusive NFTs.
 
+
+
+
 ## What is Hunty?
 
 Imagine a treasure hunt where every clue is verified on the blockchain, every answer is secure, and every completion is rewarded with real value. That's Hunty.
