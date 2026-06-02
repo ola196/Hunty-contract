@@ -816,85 +816,83 @@ impl HuntyCore {
         let queried_at = env.ledger().timestamp();
         let players = Storage::get_hunt_players(&env, hunt_id);
         let scan_limit = core::cmp::min(players.len(), MAX_LEADERBOARD_SCAN_SIZE);
-        let mut entries = Vec::new(&env);
-        for i in 0..scan_limit {
-            let p = players.get(i).unwrap();
-            entries.push_back((
-                p.player.clone(),
-                p.total_score,
-                p.completed_at,
-                p.is_completed,
-            ));
-        }
-        let mut selected = Vec::new(&env);
-        let mut result = Vec::new(&env);
-        for rank in 1..=effective_limit {
-            if let Some(best_idx) = Self::leaderboard_best_index(&entries, &selected) {
-                selected.push_back(best_idx);
-                let (player, score, completed_at, is_completed) = entries.get(best_idx).unwrap();
-                result.push_back(LeaderboardEntry {
-                    rank,
-                    player,
-                    score,
-                    completed_at,
-                    is_completed,
-                    queried_at,
-                });
-            } else {
-                break;
+
+        // Single linear top-k pass. We keep at most `effective_limit` entries in
+        // `top` at all times, ordered best-first. For each player we find the
+        // insertion point against the current top-k and splice them in, dropping
+        // anything past the limit. This is O(scan_limit * effective_limit) with
+        // effective_limit <= 20, replacing the previous O(effective_limit *
+        // scan_limit) repeated-selection scan and its inner `selected` lookup.
+        // Allocation is bounded to the k-sized result vector.
+        let mut top: Vec<(Address, u32, u64, bool)> = Vec::new(&env);
+        if effective_limit > 0 {
+            for i in 0..scan_limit {
+                let p = players.get(i).unwrap();
+                let candidate = (p.player.clone(), p.total_score, p.completed_at, p.is_completed);
+
+                // Find the first position whose occupant is worse than the
+                // candidate; that is where the candidate belongs.
+                let len = top.len();
+                let mut pos = len;
+                let mut j = 0;
+                while j < len {
+                    let existing = top.get(j).unwrap();
+                    if Self::leaderboard_is_better(&candidate, &existing) {
+                        pos = j;
+                        break;
+                    }
+                    j += 1;
+                }
+
+                // If the board is already full and the candidate is no better
+                // than the last entry, skip it entirely.
+                if pos >= effective_limit {
+                    continue;
+                }
+
+                top.insert(pos, candidate);
+                // Trim anything beyond the limit (at most one element).
+                if top.len() > effective_limit {
+                    top.remove(top.len() - 1);
+                }
             }
+        }
+
+        let mut result = Vec::new(&env);
+        let mut rank = 1u32;
+        for entry in top.iter() {
+            let (player, score, completed_at, is_completed) = entry;
+            result.push_back(LeaderboardEntry {
+                rank,
+                player,
+                score,
+                completed_at,
+                is_completed,
+                queried_at,
+            });
+            rank += 1;
         }
         Ok(result)
     }
 
-    /// Picks the index of the best entry not in `selected`. Order: score desc, then completed_at asc (0 = last).
-    fn leaderboard_best_index(
-        entries: &Vec<(Address, u32, u64, bool)>,
-        selected: &Vec<u32>,
-    ) -> Option<u32> {
-        let n = entries.len();
-        let mut best_idx: Option<u32> = None;
-        for i in 0..n {
-            let i_u32 = i as u32;
-            let mut taken = false;
-            for j in 0..selected.len() {
-                if selected.get(j).unwrap() == i_u32 {
-                    taken = true;
-                    break;
-                }
-            }
-            if taken {
-                continue;
-            }
-            let (_, score, completed_at, _) = entries.get(i).unwrap();
-            let better = match best_idx {
-                None => true,
-                Some(bi) => {
-                    let (_, b_score, b_completed_at, _) = entries.get(bi).unwrap();
-                    if score > b_score {
-                        true
-                    } else if score == b_score {
-                        let a_val = if completed_at == 0 {
-                            u64::MAX
-                        } else {
-                            completed_at
-                        };
-                        let b_val = if b_completed_at == 0 {
-                            u64::MAX
-                        } else {
-                            b_completed_at
-                        };
-                        a_val < b_val
-                    } else {
-                        false
-                    }
-                }
-            };
-            if better {
-                best_idx = Some(i_u32);
-            }
+    /// Ordering predicate for leaderboard entries: returns true if `a` should
+    /// rank strictly ahead of `b`. Order: score descending, then `completed_at`
+    /// ascending where 0 (not yet completed) is treated as last.
+    fn leaderboard_is_better(
+        a: &(Address, u32, u64, bool),
+        b: &(Address, u32, u64, bool),
+    ) -> bool {
+        let (_, a_score, a_completed_at, _) = a;
+        let (_, b_score, b_completed_at, _) = b;
+        if a_score > b_score {
+            true
+        } else if a_score == b_score {
+            let a_val = if *a_completed_at == 0 { u64::MAX } else { *a_completed_at };
+            let b_val = if *b_completed_at == 0 { u64::MAX } else { *b_completed_at };
+            a_val < b_val
+        } else {
+            false
         }
-        best_idx
     }
 
     /// Returns aggregate statistics for a hunt (read-only): total players, completion rate, average score.
