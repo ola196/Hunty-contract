@@ -288,6 +288,14 @@ pub struct RewardClaimedEvent {
     pub nft_awarded: bool,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RewardClaimFailedEvent {
+    pub hunt_id: u64,
+    pub player: Address,
+    pub error_code: u32,
+}
+
 /// Emitted when a clue is added. Does not expose the question or answer hash.
 #[contracttype]
 #[derive(Clone, Debug)]

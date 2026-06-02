@@ -6,15 +6,15 @@ use std::string::ToString;
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{Address, Env, String, Vec};
+    use soroban_sdk::{Address, Env, String, Symbol, TryIntoVal, Vec};
     // Bring Soroban testutils traits into scope (generate addresses, set ledger info, register contracts).
     use crate::errors::{HuntError, HuntErrorCode};
     use crate::storage::Storage;
-    use crate::types::HuntStatus;
+    use crate::types::{HuntStatus, RewardClaimFailedEvent};
     use crate::HuntyCore;
     use nft_reward::{NftMetadata, NftReward};
     use reward_manager::RewardManager;
-    use soroban_sdk::testutils::{Address as _, Ledger as _, Register as _};
+    use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, Register as _};
     use soroban_sdk::{token, String as SorobanString};
 
     /// Runs a closure inside a registered HuntyCore contract context so storage is accessible.
@@ -1596,8 +1596,9 @@ mod test {
             let err = HuntyCore::register_player(env.clone(), hunt_id, player.clone()).unwrap_err();
             assert_eq!(err, HuntErrorCode::DuplicateRegistration);
 
-            
-        });
+            Ok::<(), HuntErrorCode>(())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -2986,6 +2987,7 @@ mod test {
         let contract_id = env.register_contract(None, HuntyCore);
 
         // Setup hunt and players
+        env.mock_all_auths();
         let hunt_id = as_core_contract(&env, &contract_id, |env| {
             let hid = HuntyCore::create_hunt(
                 env.clone(),
@@ -3016,10 +3018,13 @@ mod test {
         });
 
         // Register and complete for all players
-        env.mock_all_auths();
-        as_core_contract(&env, &contract_id, |env| {
-            for p in [&player1, &player2, &player3] {
+        for p in [&player1, &player2, &player3] {
+            env.mock_all_auths();
+            as_core_contract(&env, &contract_id, |env| {
                 HuntyCore::register_player(env.clone(), hunt_id, (*p).clone()).unwrap();
+            });
+            env.mock_all_auths();
+            as_core_contract(&env, &contract_id, |env| {
                 HuntyCore::submit_answer(
                     env.clone(),
                     hunt_id,
@@ -3028,10 +3033,11 @@ mod test {
                     String::from_str(env, "a"),
                 )
                 .unwrap();
-            }
-        });
+            });
+        }
 
         // Batch complete by creator
+        env.mock_all_auths();
         as_core_contract(&env, &contract_id, |env| {
             let players = Vec::from_array(env, [player1.clone(), player2.clone(), player3.clone()]);
             HuntyCore::batch_complete_hunt(env.clone(), hunt_id, creator.clone(), players).unwrap();
@@ -3064,7 +3070,6 @@ mod test {
 
         let contract_id = env.register_contract(None, HuntyCore);
 
-        // Setup hunt and players
         let hunt_id = as_core_contract(&env, &contract_id, |env| {
             let hid = HuntyCore::create_hunt(
                 env.clone(),
@@ -3086,7 +3091,6 @@ mod test {
             )
             .unwrap();
 
-            // configure rewards
             let mut hunt = Storage::get_hunt(env, hid).unwrap();
             hunt.reward_config = crate::types::RewardConfig::new(1000, false, None, 10, 0, 0);
             Storage::save_hunt(env, &hunt);
@@ -3095,7 +3099,6 @@ mod test {
             hid
         });
 
-        // Register and submit answers for all eligible players (A, C, D)
         env.mock_all_auths();
         as_core_contract(&env, &contract_id, |env| {
             for p in [&player_a, &player_c, &player_d] {
@@ -3111,25 +3114,25 @@ mod test {
             }
         });
 
-        // Player C claims individually before batch (already claimed)
         env.mock_all_auths();
         as_core_contract(&env, &contract_id, |env| {
             HuntyCore::complete_hunt(env.clone(), hunt_id, player_c.clone()).unwrap();
         });
 
-        // Batch complete with mixed players
         env.mock_all_auths();
         as_core_contract(&env, &contract_id, |env| {
-            let players = Vec::from_array(env, [
-                player_a.clone(),
-                player_b.clone(), // not registered
-                player_c.clone(), // already claimed
-                player_d.clone(),
-            ]);
+            let players = Vec::from_array(
+                env,
+                [
+                    player_a.clone(),
+                    player_b.clone(), // not registered
+                    player_c.clone(), // already claimed
+                    player_d.clone(),
+                ],
+            );
             HuntyCore::batch_complete_hunt(env.clone(), hunt_id, creator.clone(), players).unwrap();
         });
 
-        // Verify successful completions for A and D
         for p in [player_a, player_d] {
             let progress = as_core_contract(&env, &contract_id, |env| {
                 HuntyCore::get_player_progress(env.clone(), hunt_id, p).unwrap()
@@ -3137,13 +3140,41 @@ mod test {
             assert!(progress.reward_claimed);
         }
 
-        // Player B should not be registered, expect error when fetching progress
         let err = as_core_contract(&env, &contract_id, |env| {
-            HuntyCore::get_player_progress(env.clone(), hunt_id, player_b).unwrap_err()
+            HuntyCore::get_player_progress(env.clone(), hunt_id, player_b.clone()).unwrap_err()
         });
         assert_eq!(err, HuntErrorCode::PlayerNotRegistered);
 
-        // Verify claimed count reflects only three total claims (A, C, D)
+        let failure_topic = Symbol::new(&env, "RewardClaimFailed");
+        let events = env.events().all();
+        let mut failure_events = 0;
+        let mut saw_unregistered_player = false;
+        let mut saw_already_claimed_player = false;
+
+        for i in 0..events.len() {
+            let (_contract, topics, data) = events.get(i).unwrap();
+            let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+            if topic == failure_topic {
+                failure_events += 1;
+                let event: RewardClaimFailedEvent = data.try_into_val(&env).unwrap();
+                assert_eq!(event.hunt_id, hunt_id);
+
+                if event.player == player_b {
+                    assert_eq!(event.error_code, HuntErrorCode::PlayerNotRegistered as u32);
+                    saw_unregistered_player = true;
+                } else if event.player == player_c {
+                    assert_eq!(event.error_code, HuntErrorCode::RewardAlreadyClaimed as u32);
+                    saw_already_claimed_player = true;
+                } else {
+                    panic!("unexpected RewardClaimFailedEvent player");
+                }
+            }
+        }
+
+        assert_eq!(failure_events, 2);
+        assert!(saw_unregistered_player);
+        assert!(saw_already_claimed_player);
+
         let hunt = as_core_contract(&env, &contract_id, |env| {
             HuntyCore::get_hunt_info(env.clone(), hunt_id).unwrap()
         });

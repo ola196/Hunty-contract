@@ -7,7 +7,7 @@ use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, ClueRemovedEvent,
     Hunt, HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
     HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
+    PlayerRegisteredEvent, RewardClaimFailedEvent, RewardClaimedEvent, RewardConfig,
 };
 use reward_manager::RewardErrorCode;
 use soroban_sdk::{
@@ -538,8 +538,16 @@ impl HuntyCore {
         for i in 0..players.len() {
             let player = players.get(i).unwrap();
             // Process each player; we use a best-effort approach where one failure
-            // doesn't block the entire batch, though creators should verify results via events.
-            let _ = Self::process_reward_distribution(&env, hunt_id, player);
+            // doesn't block the entire batch, but failures are surfaced on-chain.
+            if let Err(error) = Self::process_reward_distribution(&env, hunt_id, player.clone()) {
+                let event = RewardClaimFailedEvent {
+                    hunt_id,
+                    player,
+                    error_code: error as u32,
+                };
+                env.events()
+                    .publish((Symbol::new(&env, "RewardClaimFailed"), hunt_id), event);
+            }
         }
 
         Ok(())
