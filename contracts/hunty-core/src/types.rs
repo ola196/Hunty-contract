@@ -128,7 +128,8 @@ pub struct PlayerProgress {
     pub player: Address,
     pub hunt_id: u64,
     pub completed_clues: Vec<u32>,
-    pub clue_attempts: Map<u32, u32>,
+    pub completed_clue_index: Map<u32, bool>,
+    pub required_completed_count: u32,
     pub total_score: u32,
     pub required_completed_count: u32,
     pub started_at: u64,
@@ -144,7 +145,8 @@ impl PlayerProgress {
             player,
             hunt_id,
             completed_clues: Vec::new(env),
-            clue_attempts: Map::new(env),
+            completed_clue_index: Map::new(env),
+            required_completed_count: 0,
             total_score: 0,
             required_completed_count: 0,
             started_at: current_time,
@@ -171,12 +173,24 @@ impl PlayerProgress {
     }
 
     /// Reconstruct from stored form plus the key fields.
-    pub fn from_stored(stored: StoredPlayerProgress, player: Address, hunt_id: u64) -> Self {
+    pub fn from_stored(
+        env: &Env,
+        stored: StoredPlayerProgress,
+        player: Address,
+        hunt_id: u64,
+    ) -> Self {
+        let mut completed_clue_index = Map::new(env);
+        for i in 0..stored.completed_clues.len() {
+            let clue_id = stored.completed_clues.get(i).unwrap();
+            completed_clue_index.set(clue_id, true);
+        }
+
         Self {
             player,
             hunt_id,
             completed_clues: stored.completed_clues,
-            clue_attempts: stored.clue_attempts,
+            completed_clue_index,
+            required_completed_count: stored.required_completed_count,
             total_score: stored.total_score,
             required_completed_count: stored.required_completed_count,
             started_at: stored.started_at,
@@ -188,17 +202,13 @@ impl PlayerProgress {
     }
 
     pub fn has_completed_clue(&self, clue_id: u32) -> bool {
-        for i in 0..self.completed_clues.len() {
-            if self.completed_clues.get(i).unwrap() == clue_id {
-                return true;
-            }
-        }
-        false
+        self.completed_clue_index.get(clue_id).is_some()
     }
 
     pub fn complete_clue(&mut self, _env: &Env, clue_id: u32, points: u32, is_required: bool) {
         if !self.has_completed_clue(clue_id) {
             self.completed_clues.push_back(clue_id);
+            self.completed_clue_index.set(clue_id, true);
             if is_required {
                 self.required_completed_count += 1;
             }

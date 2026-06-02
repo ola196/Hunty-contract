@@ -289,6 +289,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "required_completed_count"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "reward_claimed"
                       },
                       "val": {

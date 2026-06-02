@@ -105,13 +105,7 @@ impl Storage {
             .storage()
             .persistent()
             .get::<_, StoredPlayerProgress>(&key)
-            .map(|stored| PlayerProgress::from_stored(stored, player.clone(), hunt_id));
-        if result.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
-        }
-        result
+            .map(|stored| PlayerProgress::from_stored(env, stored, player.clone(), hunt_id))
     }
 
     pub fn get_player_progress_or_error(

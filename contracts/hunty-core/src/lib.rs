@@ -577,14 +577,10 @@ impl HuntyCore {
         Ok(hunt)
     }
 
-    /// Returns the total number of hunts created by this contract.
-    pub fn get_hunt_count(env: Env) -> u64 {
-        Storage::get_hunt_counter(&env)
-    }
-
     /// Sets the RewardManager contract address for cross-contract reward distribution.
-    pub fn set_reward_manager(env: Env, reward_manager: Address) {
-        let old_address = Storage::get_reward_manager(&env);
+    ///
+    /// Access control: only the admin (or contract invoker) is allowed to set this.
+    pub fn set_reward_manager(env: Env, reward_manager: Address) -> Result<(), HuntErrorCode> {
         Storage::set_reward_manager(&env, &reward_manager);
         let event = RewardManagerSetEvent {
             old_address,
@@ -1151,24 +1147,107 @@ impl HuntyCore {
         Ok(result)
     }
 
-    /// Ordering predicate for leaderboard entries: returns true if `a` should
-    /// rank strictly ahead of `b`. Order: score descending, then `completed_at`
-    /// ascending where 0 (not yet completed) is treated as last.
-    fn leaderboard_is_better(
-        a: &(Address, u32, u64, bool),
-        b: &(Address, u32, u64, bool),
-    ) -> bool {
-        let (_, a_score, a_completed_at, _) = a;
-        let (_, b_score, b_completed_at, _) = b;
-        if a_score > b_score {
-            true
-        } else if a_score == b_score {
-            let a_val = if *a_completed_at == 0 { u64::MAX } else { *a_completed_at };
-            let b_val = if *b_completed_at == 0 { u64::MAX } else { *b_completed_at };
-            a_val < b_val
-        } else {
-            false
+    /// Scans a bounded window of registered players for a hunt and returns
+    /// their compact rows. This method enables clients to page through all
+    /// registered players in multiple calls (bounded by `MAX_LEADERBOARD_SCAN_SIZE`)
+    /// and merge results off-chain to build a full leaderboard without a single
+    /// large on-chain scan.
+    ///
+    /// Arguments:
+    /// * `env` - Soroban environment
+    /// * `hunt_id` - Hunt identifier
+    /// * `start_index` - Zero-based index into the registered players list to start scanning
+    /// * `window_size` - Number of player records to scan in this call (capped)
+    ///
+    /// Returns a `LeaderboardWindow` containing the scanned rows, the `next_index`
+    /// clients should use for the following call and a `finished` flag indicating
+    /// whether the end of the player list has been reached.
+    pub fn get_hunt_leaderboard_window(
+        env: Env,
+        hunt_id: u64,
+        start_index: u32,
+        window_size: u32,
+    ) -> Result<crate::types::LeaderboardWindow, HuntErrorCode> {
+        let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+        let queried_at = env.ledger().timestamp();
+        let players = Storage::get_hunt_players(&env, hunt_id);
+        let total_players = players.len();
+
+        let start = core::cmp::min(start_index, total_players);
+        let capped_window = core::cmp::min(window_size, MAX_LEADERBOARD_SCAN_SIZE);
+        let end = core::cmp::min(start.saturating_add(capped_window), total_players);
+
+        let mut rows = Vec::new(&env);
+        for i in start..end {
+            let p = players.get(i).unwrap();
+            rows.push_back(crate::types::LeaderboardRow {
+                index: i,
+                player: p.player.clone(),
+                score: p.total_score,
+                completed_at: p.completed_at,
+                is_completed: p.is_completed,
+            });
         }
+
+        let next_index = end;
+        let finished = end >= total_players;
+
+        Ok(crate::types::LeaderboardWindow {
+            entries: rows,
+            next_index,
+            finished,
+            queried_at,
+        })
+    }
+
+    /// Picks the index of the best entry not in `selected`. Order: score desc, then completed_at asc (0 = last).
+    fn leaderboard_best_index(
+        entries: &Vec<(Address, u32, u64, bool)>,
+        selected: &Vec<u32>,
+    ) -> Option<u32> {
+        let n = entries.len();
+        let mut best_idx: Option<u32> = None;
+        for i in 0..n {
+            let i_u32 = i as u32;
+            let mut taken = false;
+            for j in 0..selected.len() {
+                if selected.get(j).unwrap() == i_u32 {
+                    taken = true;
+                    break;
+                }
+            }
+            if taken {
+                continue;
+            }
+            let (_, score, completed_at, _) = entries.get(i).unwrap();
+            let better = match best_idx {
+                None => true,
+                Some(bi) => {
+                    let (_, b_score, b_completed_at, _) = entries.get(bi).unwrap();
+                    if score > b_score {
+                        true
+                    } else if score == b_score {
+                        let a_val = if completed_at == 0 {
+                            u64::MAX
+                        } else {
+                            completed_at
+                        };
+                        let b_val = if b_completed_at == 0 {
+                            u64::MAX
+                        } else {
+                            b_completed_at
+                        };
+                        a_val < b_val
+                    } else {
+                        false
+                    }
+                }
+            };
+            if better {
+                best_idx = Some(i_u32);
+            }
+        }
+        best_idx
     }
 
         /// Returns a list of all hunts (paginated).

@@ -2486,8 +2486,9 @@ mod test {
         let question = String::from_str(&env, "Q");
         let answer = String::from_str(&env, "a");
 
-        with_core_contract(&env, |env, _cid| {
-            HuntyCore::initialize_admin(env.clone(), admin.clone()).unwrap();
+        let contract_id = env.register_contract(None, HuntyCore);
+        env.mock_all_auths();
+        let hunt_id = as_core_contract(&env, &contract_id, |env| {
             let hunt_id = HuntyCore::create_hunt(
                 env.clone(),
                 creator.clone(),
@@ -2503,7 +2504,27 @@ mod test {
             HuntyCore::register_player(env.clone(), hunt_id, player.clone()).unwrap();
             HuntyCore::pause_contract(env.clone(), admin.clone()).unwrap();
 
-            let err = HuntyCore::submit_answer(
+        let progress = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::get_player_progress(env.clone(), hunt_id, player.clone()).unwrap()
+        });
+        assert_eq!(progress.required_completed_count, 1);
+        assert!(progress.is_completed);
+    }
+
+    #[test]
+    fn test_required_completed_counter_is_not_double_incremented_on_resubmit() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+
+        let creator = Address::generate(&env);
+        let player = Address::generate(&env);
+        let question = String::from_str(&env, "Q");
+        let answer = String::from_str(&env, "a");
+
+        let contract_id = env.register_contract(None, HuntyCore);
+        env.mock_all_auths();
+        let hunt_id = as_core_contract(&env, &contract_id, |env| {
+            let hunt_id = HuntyCore::create_hunt(
                 env.clone(),
                 hunt_id,
                 1,
