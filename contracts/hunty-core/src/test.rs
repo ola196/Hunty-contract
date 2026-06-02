@@ -1883,6 +1883,7 @@ mod test {
         let answer = String::from_str(&env, "a");
 
         let contract_id = env.register_contract(None, HuntyCore);
+        env.mock_all_auths();
         let hunt_id = as_core_contract(&env, &contract_id, |env| {
             let hunt_id = HuntyCore::create_hunt(
                 env.clone(),
@@ -1925,6 +1926,7 @@ mod test {
         let answer = String::from_str(&env, "a");
 
         let contract_id = env.register_contract(None, HuntyCore);
+        env.mock_all_auths();
         let hunt_id = as_core_contract(&env, &contract_id, |env| {
             let hunt_id = HuntyCore::create_hunt(
                 env.clone(),

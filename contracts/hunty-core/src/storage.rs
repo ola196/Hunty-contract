@@ -172,7 +172,7 @@ impl Storage {
         env.storage()
             .persistent()
             .get::<_, StoredPlayerProgress>(&key)
-            .map(|stored| PlayerProgress::from_stored(stored, player.clone(), hunt_id))
+            .map(|stored| PlayerProgress::from_stored(env, stored, player.clone(), hunt_id))
     }
 
     /// Retrieves player progress or returns an error if not found.
