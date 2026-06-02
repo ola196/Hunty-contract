@@ -1270,79 +1270,30 @@ mod test {
     }
 
     #[test]
-    fn test_admin_withdraw_unclaimed_partial_success() {
+    fn test_admin_withdraw_unclaimed_never_funded() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (contract_id, token_address, token_admin) = setup(&env);
         let admin = Address::generate(&env);
         let creator = Address::generate(&env);
         let recipient = Address::generate(&env);
-        let player = Address::generate(&env);
 
-        mint_tokens(&env, &token_address, &token_admin, &creator, 10_000);
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+            // Create pool with 0 initial balance and never fund it
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
 
-        let client = crate::RewardManagerClient::new(&env, &contract_id);
+            // Admin tries to withdraw from a pool that was never funded
+            let result = RewardManager::admin_withdraw_unclaimed(
+                env.clone(),
+                admin.clone(),
+                1,
+                recipient.clone(),
+            );
+            assert_eq!(result, Err(RewardErrorCode::InvalidAmount));
+        });
 
-        client.initialize(&admin, &token_address);
-        client.create_reward_pool(&creator, &1, &0);
-        client.fund_reward_pool(&creator, &1, &6_000);
-
-        // Distribute to one player, leaving 4_000 unclaimed
-        client.distribute_rewards(&1, &player, &xlm_only_config(&env, 2_000));
-
-        // Admin partially withdraws 1_500 to recipient
-        let result = client.try_admin_withdraw_unclaimed(&admin, &1, &recipient, &1_500);
-        assert!(result.is_ok());
-
-        // Pool balance should now be 2_500
-        assert_eq!(client.get_pool_balance(&1), 2_500);
-
-        // Admin withdraws the remaining balance using 0
-        let result2 = client.try_admin_withdraw_unclaimed(&admin, &1, &recipient, &0);
-        assert!(result2.is_ok());
-        assert_eq!(client.get_pool_balance(&1), 0);
-
-        // Recipient should have received 4_000 in total
-        assert_eq!(get_balance(&env, &token_address, &recipient), 4_000);
-    }
-
-    #[test]
-    fn test_admin_withdraw_unclaimed_invalid_amount_partial() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, token_address, token_admin) = setup(&env);
-        let admin = Address::generate(&env);
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let player = Address::generate(&env);
-
-        mint_tokens(&env, &token_address, &token_admin, &creator, 10_000);
-
-        let client = crate::RewardManagerClient::new(&env, &contract_id);
-
-        client.initialize(&admin, &token_address);
-        client.create_reward_pool(&creator, &1, &0);
-        client.fund_reward_pool(&creator, &1, &6_000);
-
-        // Distribute to one player, leaving 4_000 unclaimed
-        client.distribute_rewards(&1, &player, &xlm_only_config(&env, 2_000));
-
-        // Try to withdraw negative amount
-        let result_neg = client.try_admin_withdraw_unclaimed(
-            &admin,
-            &1,
-            &recipient,
-            &-500,
-        );
-        assert!(result_neg.is_err()); // should fail with InvalidAmount or similar host error
-
-        // Try to withdraw more than remaining balance (4_500 > 4_000)
-        let result_excess = client.try_admin_withdraw_unclaimed(
-            &admin,
-            &1,
-            &recipient,
-            &4_500,
-        );
-        assert!(result_excess.is_err());
+        // Recipient received nothing
+        assert_eq!(get_balance(&env, &token_address, &recipient), 0);
     }
 }
