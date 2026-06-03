@@ -2,13 +2,13 @@
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, Symbol, Val, Vec};
 
 pub use crate::errors::RewardErrorCode;
+use crate::nft_handler::NftHandler;
+use crate::storage::Storage;
 pub use crate::types::{
     DistributionRecord, DistributionStatus, RewardConfig, RewardPoolConfig, RewardPoolStatus,
     ValidationResult,
 };
-use crate::storage::Storage;
 use crate::xlm_handler::XlmHandler;
-use crate::nft_handler::NftHandler;
 
 #[contract]
 pub struct RewardManager;
@@ -232,8 +232,8 @@ impl RewardManager {
             return Err(RewardErrorCode::InvalidAmount);
         }
 
-        let pool_config = Storage::get_pool_config(&env, hunt_id)
-            .ok_or(RewardErrorCode::PoolNotFound)?;
+        let pool_config =
+            Storage::get_pool_config(&env, hunt_id).ok_or(RewardErrorCode::PoolNotFound)?;
 
         if funder != pool_config.creator {
             return Err(RewardErrorCode::Unauthorized);
@@ -293,8 +293,7 @@ impl RewardManager {
             return Ok(());
         }
 
-        let xlm_token = Storage::get_xlm_token(&env)
-            .ok_or(RewardErrorCode::NotInitialized)?;
+        let xlm_token = Storage::get_xlm_token(&env).ok_or(RewardErrorCode::NotInitialized)?;
 
         let contract_addr = env.current_contract_address();
         let client = soroban_sdk::token::Client::new(&env, &xlm_token);
@@ -405,8 +404,7 @@ impl RewardManager {
                 }
             }
 
-            let xlm_token = Storage::get_xlm_token(&env)
-                .ok_or(RewardErrorCode::NotInitialized)?;
+            let xlm_token = Storage::get_xlm_token(&env).ok_or(RewardErrorCode::NotInitialized)?;
 
             let pool_balance = Storage::get_pool_balance(&env, hunt_id);
             if pool_balance < amount {
@@ -478,10 +476,7 @@ impl RewardManager {
             &env,
             hunt_id,
             &player_address,
-            &DistributionRecord {
-                xlm_amount,
-                nft_id,
-            },
+            &DistributionRecord { xlm_amount, nft_id },
         );
 
         // Emit RewardsDistributed event
