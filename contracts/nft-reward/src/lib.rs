@@ -353,6 +353,33 @@ impl NftReward {
         Storage::get_nft(&env, nft_id).map(|nft| nft.owner)
     }
 
+    /// Verifies whether `address` is the current owner of `nft_id`.
+    /// Returns `true` when the NFT exists and the stored owner equals `address`.
+    pub fn verify_ownership(env: Env, address: Address, nft_id: u64) -> bool {
+        if let Some(nft) = Storage::get_nft(&env, nft_id) {
+            nft.owner == address
+        } else {
+            false
+        }
+    }
+
+    /// Returns `true` if `address` owns any NFT minted for `hunt_id`.
+    /// Scans the owner's indexed NFT IDs and checks each NFT's `hunt_id`.
+    pub fn has_hunt_nft(env: Env, address: Address, hunt_id: u64) -> bool {
+        let nfts = Storage::get_owner_nfts(&env, &address);
+        let len = nfts.len();
+        for i in 0..len {
+            if let Some(id) = nfts.get(i) {
+                if let Some(nft) = Storage::get_nft(&env, id) {
+                    if nft.hunt_id == hunt_id {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Returns paginated NFT IDs owned by an address.
     pub fn get_player_nfts(env: Env, owner: Address, offset: u32, limit: u32) -> Vec<u64> {
         let nfts = Storage::get_owner_nfts(&env, &owner);
