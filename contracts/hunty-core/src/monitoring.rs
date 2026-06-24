@@ -60,12 +60,12 @@ impl Monitoring {
         let gas_total: u64 = env.storage().instance().get(&GAS_UNITS_KEY).unwrap_or(0);
         let alerts: u32 = env.storage().instance().get(&ALERTS_KEY).unwrap_or(0);
 
-        let failure_rate_bps = if total > 0 {
-            ((failures * 10_000) / total) as u32
+        let failure_rate_bps = if let Some(rate) = failures.checked_mul(10_000).and_then(|n| n.checked_div(total)) {
+            rate as u32
         } else {
             0
         };
-        let avg_gas_units = if total > 0 { gas_total / total } else { 0 };
+        let avg_gas_units = gas_total.checked_div(total).unwrap_or(0);
 
         ContractHealth {
             total_invocations: total,
