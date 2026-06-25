@@ -1803,4 +1803,82 @@ use soroban_sdk::{symbol_short, token, Address, Env, Symbol, Vec};
         // Recipient received nothing
         assert_eq!(get_balance(&env, &token_address, &recipient), 0);
     }
+
+    // ========== Upgrade authorization ==========
+
+    #[test]
+    fn test_propose_upgrade_requires_admin() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+            RewardManager::initialize_schema(env.clone(), admin.clone());
+
+            let result = RewardManager::propose_upgrade(env.clone(), attacker, 2);
+            assert_eq!(
+                result,
+                Err(hunty_migration::UpgradeAuthError::Unauthorized)
+            );
+        });
+    }
+
+    #[test]
+    fn test_run_migration_requires_proposal_and_timelock() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+            RewardManager::set_upgrade_timelock(env.clone(), admin.clone(), 3600).unwrap();
+
+            let without_proposal =
+                RewardManager::run_migration(env.clone(), admin.clone(), 2, false);
+            assert_eq!(
+                without_proposal,
+                Err(hunty_migration::UpgradeAuthError::NoProposal)
+            );
+
+            RewardManager::propose_upgrade(env.clone(), admin.clone(), 2).unwrap();
+            let before_timelock =
+                RewardManager::run_migration(env.clone(), admin.clone(), 2, false);
+            assert_eq!(
+                before_timelock,
+                Err(hunty_migration::UpgradeAuthError::TimelockPending)
+            );
+
+            env.ledger().set_timestamp(env.ledger().timestamp() + 3601);
+            let executed = RewardManager::run_migration(env.clone(), admin.clone(), 2, false);
+            assert!(executed.is_ok());
+            assert!(executed.as_ref().unwrap().succeeded);
+
+            let history = RewardManager::get_upgrade_history(env.clone(), 0, 10);
+            assert_eq!(history.len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_upgrade_proposal_and_events() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+            RewardManager::initialize_schema(env.clone(), admin.clone());
+
+            let proposal = RewardManager::propose_upgrade(env.clone(), admin.clone(), 2).unwrap();
+            assert_eq!(proposal.target_version, 2);
+            assert_eq!(
+                RewardManager::get_upgrade_proposal(env.clone()),
+                Some(proposal)
+            );
+        });
+    }
 }

@@ -22,7 +22,7 @@ impl NftRewardMigration {
     pub fn run_migration(env: &Env, target_version: u32, dry_run: bool) -> MigrationReport {
         let mut current = MigrationFramework::detect_version(env);
         if current >= target_version {
-            return MigrationFramework::build_report(
+            return Ok(MigrationFramework::build_report(
                 env,
                 current,
                 target_version,
@@ -30,7 +30,7 @@ impl NftRewardMigration {
                 dry_run,
                 true,
                 "already at target",
-            );
+            ));
         }
 
         if !dry_run {
@@ -82,13 +82,13 @@ impl NftRewardMigration {
         )
     }
 
-    pub fn rollback_migration(env: &Env, admin: Address) -> Option<MigrationReport> {
-        admin.require_auth();
-        let previous = MigrationFramework::rollback_version(env)?;
+    pub fn rollback_migration(env: &Env, admin: &Address) -> Result<MigrationReport, UpgradeAuthError> {
+        UpgradeAuthorization::require_admin(env, admin, Self::configured_admin(env))?;
+        let previous = MigrationFramework::rollback_version(env).ok_or(UpgradeAuthError::NoProposal)?;
         let current = MigrationFramework::detect_version(env);
         MigrationFramework::set_version(env, previous);
         MigrationFramework::clear_rollback(env);
-        Some(MigrationFramework::build_report(
+        Ok(MigrationFramework::build_report(
             env,
             current,
             previous,

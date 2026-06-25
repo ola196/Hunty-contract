@@ -1006,18 +1006,72 @@ impl NftReward {
         migration::NftRewardMigration::initialize_schema(&env);
     }
 
+    pub fn propose_upgrade(
+        env: Env,
+        admin: Address,
+        target_version: u32,
+    ) -> Result<hunty_migration::UpgradeProposal, hunty_migration::UpgradeAuthError> {
+        let proposal =
+            migration::NftRewardMigration::propose_upgrade(&env, &admin, target_version)?;
+        env.events().publish(
+            migration::NftRewardMigration::upgrade_proposed_topic(&env),
+            migration::NftRewardMigration::upgrade_proposed_event(&proposal),
+        );
+        Ok(proposal)
+    }
+
+    pub fn set_upgrade_timelock(
+        env: Env,
+        admin: Address,
+        delay_seconds: u64,
+    ) -> Result<(), hunty_migration::UpgradeAuthError> {
+        migration::NftRewardMigration::set_upgrade_timelock(&env, &admin, delay_seconds)
+    }
+
+    pub fn get_upgrade_proposal(env: Env) -> Option<hunty_migration::UpgradeProposal> {
+        migration::NftRewardMigration::get_upgrade_proposal(&env)
+    }
+
+    pub fn get_upgrade_timelock(env: Env) -> u64 {
+        migration::NftRewardMigration::get_upgrade_timelock(&env)
+    }
+
+    pub fn get_upgrade_history(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<hunty_migration::UpgradeHistoryEntry> {
+        migration::NftRewardMigration::get_upgrade_history(&env, offset, limit)
+    }
+
     pub fn run_migration(
         env: Env,
         admin: Address,
         target_version: u32,
         dry_run: bool,
-    ) -> migration::MigrationReport {
-        admin.require_auth();
-        migration::NftRewardMigration::run_migration(&env, target_version, dry_run)
+    ) -> Result<migration::MigrationReport, hunty_migration::UpgradeAuthError> {
+        let from_version = migration::NftRewardMigration::get_schema_version(&env);
+        let report =
+            migration::NftRewardMigration::run_migration(&env, &admin, target_version, dry_run)?;
+        if !dry_run && report.succeeded && report.from_version < report.to_version {
+            env.events().publish(
+                migration::NftRewardMigration::upgrade_executed_topic(&env),
+                migration::NftRewardMigration::upgrade_executed_event(
+                    from_version,
+                    report.to_version,
+                    env.ledger().timestamp(),
+                    admin,
+                ),
+            );
+        }
+        Ok(report)
     }
 
-    pub fn rollback_migration(env: Env, admin: Address) -> Option<migration::MigrationReport> {
-        migration::NftRewardMigration::rollback_migration(&env, admin)
+    pub fn rollback_migration(
+        env: Env,
+        admin: Address,
+    ) -> Result<migration::MigrationReport, hunty_migration::UpgradeAuthError> {
+        migration::NftRewardMigration::rollback_migration(&env, &admin)
     }
 
     /// Searches NFTs by hunt_id.
