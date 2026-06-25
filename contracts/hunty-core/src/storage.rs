@@ -17,6 +17,8 @@ impl Storage {
     const HUNT_COUNTER_KEY: soroban_sdk::Symbol = symbol_short!("CNTR");
     const CLUE_COUNTER_KEY: soroban_sdk::Symbol = symbol_short!("CCNT");
     const REWARD_MGR_KEY: soroban_sdk::Symbol = symbol_short!("RWDMGR");
+    const BAN_KEY: soroban_sdk::Symbol = symbol_short!("BAN");
+    const SUBMISSION_KEY: soroban_sdk::Symbol = symbol_short!("SUBMIT");
     const ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("ADMIN");
     const VIEW_ONLY_KEY: soroban_sdk::Symbol = symbol_short!("VIEW");
     const GLOBAL_VIEW_ONLY_KEY: soroban_sdk::Symbol = symbol_short!("GVW");
@@ -250,6 +252,24 @@ impl Storage {
         (Self::VIEW_ONLY_KEY, hunt_id)
     }
 
+    /// Generates a storage key for a processed answer submission envelope.
+    fn processed_submission_key(
+        hunt_id: u64,
+        clue_id: u32,
+        player: &Address,
+        submission_nonce: u64,
+        submitted_at: u64,
+    ) -> (soroban_sdk::Symbol, u64, u32, Address, u64, u64) {
+        (
+            Self::SUBMISSION_KEY,
+            hunt_id,
+            clue_id,
+            player.clone(),
+            submission_nonce,
+            submitted_at,
+        )
+    }
+
     // ========== Internal Helper Functions ==========
 
     /// Adds a clue ID to the list of clues for a hunt.
@@ -398,12 +418,69 @@ impl Storage {
         env.storage().persistent().get(&Self::REWARD_MGR_KEY)
     }
 
+    pub fn save_processed_submission(
+        env: &Env,
+        hunt_id: u64,
+        clue_id: u32,
+        player: &Address,
+        submission_nonce: u64,
+        submitted_at: u64,
+        expires_at: u64,
+    ) {
+        let key = Self::processed_submission_key(
+            hunt_id,
+            clue_id,
+            player,
+            submission_nonce,
+            submitted_at,
+        );
+        env.storage().persistent().set(&key, &expires_at);
+    }
+
+    pub fn get_processed_submission_expiry(
+        env: &Env,
+        hunt_id: u64,
+        clue_id: u32,
+        player: &Address,
+        submission_nonce: u64,
+        submitted_at: u64,
+    ) -> Option<u64> {
+        let key = Self::processed_submission_key(
+            hunt_id,
+            clue_id,
+            player,
+            submission_nonce,
+            submitted_at,
+        );
+        env.storage().persistent().get(&key)
+    }
+
+    pub fn remove_processed_submission(
+        env: &Env,
+        hunt_id: u64,
+        clue_id: u32,
+        player: &Address,
+        submission_nonce: u64,
+        submitted_at: u64,
+    ) {
+        let key = Self::processed_submission_key(
+            hunt_id,
+            clue_id,
+            player,
+            submission_nonce,
+            submitted_at,
+        );
+        env.storage().persistent().remove(&key);
+    }
+
     // --- Contract version ---
 
+    #[allow(dead_code)]
     pub fn set_contract_version(env: &Env, version: u32) {
         env.storage().instance().set(&symbol_short!("CVER"), &version);
     }
 
+    #[allow(dead_code)]
     pub fn get_contract_version(env: &Env) -> Option<u32> {
         env.storage().instance().get(&symbol_short!("CVER"))
     }
@@ -579,5 +656,22 @@ impl Storage {
             .instance()
             .get(&Self::GLOBAL_VIEW_ONLY_KEY)
             .unwrap_or_else(|| Vec::new(env))
+
+    // ========== Ban Storage Functions ==========
+
+    fn ban_key(hunt_id: u64, player: &Address) -> (soroban_sdk::Symbol, u64, Address) {
+        (Self::BAN_KEY, hunt_id, player.clone())
+    }
+
+    pub fn ban_player(env: &Env, hunt_id: u64, player: &Address) {
+        env.storage().persistent().set(&Self::ban_key(hunt_id, player), &());
+    }
+
+    pub fn unban_player(env: &Env, hunt_id: u64, player: &Address) {
+        env.storage().persistent().remove(&Self::ban_key(hunt_id, player));
+    }
+
+    pub fn is_banned(env: &Env, hunt_id: u64, player: &Address) -> bool {
+        env.storage().persistent().has(&Self::ban_key(hunt_id, player))
     }
 }
