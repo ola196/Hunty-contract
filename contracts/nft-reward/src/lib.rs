@@ -101,6 +101,53 @@ pub struct AdminImageUrisUpdatedEvent {
     pub updated_count: u32,
 }
 
+/// Event emitted when an operator approval is granted or revoked.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct OperatorChangedEvent {
+    pub owner: Address,
+    pub operator: Address,
+    pub approved: bool,
+}
+
+const MAX_URI_BYTES: usize = 512;
+
+fn string_starts_with(s: &String, prefix: &String) -> bool {
+    let s_len = s.len() as usize;
+    let p_len = prefix.len() as usize;
+    if p_len > s_len {
+        return false;
+    }
+    if p_len == 0 {
+        return true;
+    }
+    if s_len > MAX_URI_BYTES || p_len > MAX_URI_BYTES {
+        return false;
+    }
+    let mut s_buf = [0u8; MAX_URI_BYTES];
+    let mut p_buf = [0u8; MAX_URI_BYTES];
+    s.copy_into_slice(&mut s_buf[..s_len]);
+    prefix.copy_into_slice(&mut p_buf[..p_len]);
+    s_buf[..p_len] == p_buf[..p_len]
+}
+
+fn replace_string_prefix(env: &Env, s: &String, old_prefix: &String, new_prefix: &String) -> String {
+    let s_len = s.len() as usize;
+    let p_len = old_prefix.len() as usize;
+    let new_prefix_len = new_prefix.len() as usize;
+    if s_len > MAX_URI_BYTES || p_len > s_len || new_prefix_len + (s_len - p_len) > MAX_URI_BYTES {
+        return s.clone();
+    }
+    let mut s_buf = [0u8; MAX_URI_BYTES];
+    s.copy_into_slice(&mut s_buf[..s_len]);
+    let suffix = &s_buf[p_len..s_len];
+
+    let mut new_buf = [0u8; MAX_URI_BYTES];
+    new_prefix.copy_into_slice(&mut new_buf[..new_prefix_len]);
+    new_buf[new_prefix_len..new_prefix_len + suffix.len()].copy_from_slice(suffix);
+    String::from_bytes(env, &new_buf[..new_prefix_len + suffix.len()])
+}
+
 mod errors;
 pub use errors::NftErrorCode;
 mod migration;
@@ -112,6 +159,8 @@ pub struct NftReward;
 
 #[contractimpl]
 impl NftReward {
+    pub const CONTRACT_VERSION: u32 = 1;
+
     /// Initializes the NFT reward contract with an admin address and optional max supply cap.
     /// Call this once to set the admin who can manage the contract.
     pub fn initialize(
@@ -284,6 +333,7 @@ impl NftReward {
             nft_id,
             hunt_id,
             owner: player_address.clone(),
+            completion_player: player_address.clone(),
             metadata: metadata.clone(),
             transferable,
             minted_at,
@@ -291,6 +341,7 @@ impl NftReward {
 
         Storage::save_nft(&env, &nft_data);
         Storage::add_nft_to_owner(&env, &player_address, nft_id);
+        Storage::add_nft_to_hunt(&env, hunt_id, nft_id);
 
         let event = NftMintedEvent {
             nft_id,
@@ -375,13 +426,10 @@ impl NftReward {
         for nft_id in 1..=total {
             if let Some(mut nft) = Storage::get_nft(&env, nft_id) {
                 let uri = nft.metadata.image_uri.clone();
-                let uri_str = uri.as_str();
 
-                if uri_str.starts_with(old_prefix.as_str()) {
-                    let suffix = uri_str.strip_prefix(old_prefix.as_str()).unwrap_or("");
-                    let new_uri = String::from_str(&env, new_prefix.as_str())
-                        .concat(&String::from_str(&env, suffix));
-                    nft.metadata.image_uri = new_uri;
+                if string_starts_with(&uri, &old_prefix) {
+                    nft.metadata.image_uri =
+                        replace_string_prefix(&env, &uri, &old_prefix, &new_prefix);
                     Storage::save_nft(&env, &nft);
                     updated += 1;
                 }
@@ -483,6 +531,16 @@ impl NftReward {
         nfts.slice(offset..end)
     }
 
+    /// Returns paginated NFT IDs minted for a hunt.
+    pub fn get_nfts_by_hunt(env: Env, hunt_id: u64, offset: u32, limit: u32) -> Vec<u64> {
+        Storage::get_hunt_nfts(&env, hunt_id, offset, limit)
+    }
+
+    /// Returns the total number of NFTs minted for a hunt.
+    pub fn get_hunt_nft_count(env: Env, hunt_id: u64) -> u32 {
+        Storage::get_hunt_nft_count(&env, hunt_id)
+    }
+
     /// Burns (permanently destroys) an NFT, removing it from storage and the owner's list.
     ///
     /// # Authorization
@@ -501,7 +559,9 @@ impl NftReward {
             return Err(crate::errors::NftErrorCode::NotOwner);
         }
 
+        let hunt_id = nft.hunt_id;
         Storage::remove_nft(&env, nft_id);
+        Storage::remove_nft_from_hunt(&env, hunt_id, nft_id);
 
         let count_key = (symbol_short!("ONFC"), owner.clone());
         let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
@@ -717,18 +777,9 @@ impl NftReward {
         results
     }
 
-    /// Searches NFTs by hunt_id.
+    /// Searches NFTs by hunt_id using the hunt collection index.
     pub fn search_by_hunt_id(env: Env, hunt_id: u64) -> Vec<u64> {
-        let all_nft_ids = Storage::get_all_nft_ids(&env);
-        let mut results = Vec::new(&env);
-        for nft_id in all_nft_ids.iter() {
-            if let Some(nft) = Storage::get_nft(&env, nft_id) {
-                if nft.hunt_id == hunt_id {
-                    results.push_back(nft_id);
-                }
-            }
-        }
-        results
+        Storage::get_hunt_nfts(&env, hunt_id, 0, u32::MAX)
     }
 
     /// Searches NFTs by rarity range (inclusive).

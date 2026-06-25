@@ -89,6 +89,7 @@ fn test_initialize_stores_admin() {
 }
 
 #[test]
+#[should_panic(expected = "HostError")]
 fn test_initialize_requires_auth() {
     let env = Env::default();
     env.ledger().set_timestamp(1000);
@@ -240,7 +241,7 @@ fn test_multiple_nfts_can_be_minted() {
     ];
     let uris = ["ipfs://hunt1", "ipfs://hunt2", "ipfs://hunt3", "ipfs://hunt4", "ipfs://hunt5"];
 
-    let mut ids = soroban_sdk::Vec::new(&env);
+    let mut ids: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
     for i in 0..5 {
         let metadata = create_metadata(&env, titles[i], descs[i], uris[i]);
         let nft_id = client.mint_reward_nft(&player, &(i as u64 + 1), &player, &metadata);
@@ -424,7 +425,7 @@ fn test_transfer_nft_requires_auth() {
     let _nft_id = client.mint_reward_nft(&from, &1, &from, &metadata);
 
     // This should fail - from has not authorized
-    client.transfer_nft(&1, &from, &to);
+    client.transfer_nft(&1, &from, &to, &from);
 }
 
 #[test]
@@ -480,7 +481,7 @@ fn test_transfer_nft_emits_event() {
     let metadata = create_metadata(&env, "Event NFT", "Desc", "ipfs://event");
 
     let nft_id = mint_transferable(&env, &client, 1, &from, &metadata);
-    client.transfer_nft(&nft_id, &from, &to);
+    client.transfer_nft(&nft_id, &from, &to, &from);
 
     // Transfer succeeded; NftTransferred event is emitted by transfer_nft
     assert_eq!(client.owner_of(&nft_id), Some(to));
@@ -508,4 +509,79 @@ fn test_get_nft_owner_matches_owner_of() {
 
     assert_eq!(client.owner_of(&nft_id), client.get_nft_owner(&nft_id));
     assert_eq!(client.get_nft_owner(&nft_id), Some(player));
+}
+
+#[test]
+fn test_get_hunt_nft_count_tracks_mints_per_hunt() {
+    let env = setup_env();
+    let client = NftRewardClient::new(&env, &env.register(NftReward, ()));
+
+    let player = Address::generate(&env);
+    let metadata = create_metadata(&env, "Hunt NFT", "Desc", "ipfs://hunt");
+
+    assert_eq!(client.get_hunt_nft_count(&1), 0);
+
+    client.mint_reward_nft(&player, &1, &player, &metadata);
+    client.mint_reward_nft(&player, &1, &player, &metadata);
+    client.mint_reward_nft(&player, &2, &player, &metadata);
+
+    assert_eq!(client.get_hunt_nft_count(&1), 2);
+    assert_eq!(client.get_hunt_nft_count(&2), 1);
+    assert_eq!(client.get_hunt_nft_count(&99), 0);
+}
+
+#[test]
+fn test_get_nfts_by_hunt_pagination() {
+    let env = setup_env();
+    let client = NftRewardClient::new(&env, &env.register(NftReward, ()));
+
+    let player = Address::generate(&env);
+    let metadata = create_metadata(&env, "Paged Hunt NFT", "Desc", "ipfs://paged");
+
+    let nft1 = client.mint_reward_nft(&player, &10, &player, &metadata);
+    let nft2 = client.mint_reward_nft(&player, &10, &player, &metadata);
+    let nft3 = client.mint_reward_nft(&player, &10, &player, &metadata);
+    let _other = client.mint_reward_nft(&player, &11, &player, &metadata);
+
+    assert_eq!(client.get_hunt_nft_count(&10), 3);
+
+    let page1 = client.get_nfts_by_hunt(&10, &0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap(), nft1);
+    assert_eq!(page1.get(1).unwrap(), nft2);
+
+    let page2 = client.get_nfts_by_hunt(&10, &2, &2);
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2.get(0).unwrap(), nft3);
+
+    let empty = client.get_nfts_by_hunt(&10, &5, &10);
+    assert_eq!(empty.len(), 0);
+
+    let search = client.search_by_hunt_id(&10);
+    assert_eq!(search.len(), 3);
+}
+
+#[test]
+fn test_burn_removes_nft_from_hunt_index() {
+    let env = setup_env();
+    let client = NftRewardClient::new(&env, &env.register(NftReward, ()));
+
+    let player = Address::generate(&env);
+    let metadata = create_metadata_full(
+        &env,
+        "Burnable",
+        "Desc",
+        "ipfs://burn",
+        "Hunt",
+        0,
+        0,
+    );
+
+    let nft_id = mint_transferable(&env, &client, 42, &player, &metadata);
+    assert_eq!(client.get_hunt_nft_count(&42), 1);
+
+    client.burn(&nft_id, &player);
+
+    assert_eq!(client.get_hunt_nft_count(&42), 0);
+    assert_eq!(client.get_nfts_by_hunt(&42, &0, &10).len(), 0);
 }
