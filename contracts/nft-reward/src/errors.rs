@@ -14,5 +14,4 @@ pub enum NftErrorCode {
     MaxSupplyReached = 8,
     NotInitialized = 9,
     NotOperator = 10,
-    InvalidMetadata = 11,
 }

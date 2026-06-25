@@ -5,7 +5,7 @@ use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, Hunt,
     HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
     HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
+    PlayerRegisteredEvent, RateLimitStatus, RewardClaimedEvent, RewardConfig,
 };
 use reward_interface::RewardErrorCode;
 use soroban_sdk::{
@@ -22,6 +22,10 @@ const MAX_LEADERBOARD_SIZE: u32 = 20;
 /// Maximum number of player records scanned when building leaderboard responses.
 /// This prevents unbounded gas growth for large hunts.
 const MAX_LEADERBOARD_SCAN_SIZE: u32 = 200;
+/// Maximum allowed age for a submission envelope before it is considered stale.
+const ANSWER_SUBMISSION_WINDOW_SECS: u64 = 300;
+/// Small forward-skew allowance so near-simultaneous signing and inclusion does not fail.
+const ANSWER_SUBMISSION_FUTURE_SKEW_SECS: u64 = 30;
 
 #[contract]
 pub struct HuntyCore;
@@ -52,6 +56,7 @@ impl HuntyCore {
         description: String,
         _start_time: Option<u64>,
         end_time: Option<u64>,
+        max_submissions_per_minute: u32,
     ) -> Result<u64, HuntErrorCode> {
         monitoring::Monitoring::record_invocation(&env, 50_000, true);
         // Validate creator address - in Soroban, Address is always valid if constructed,
@@ -75,8 +80,10 @@ impl HuntyCore {
         )
         .map_err(|_| HuntErrorCode::InvalidDescription)?;
 
-        // Get current timestamp
         let current_time = env.ledger().timestamp();
+        rate_limit::RateLimiter::check_and_increment(&env, &creator, current_time)?;
+
+        // Get current timestamp
 
         // Generate unique hunt ID
         let hunt_id = Storage::next_hunt_id(&env);
@@ -102,7 +109,7 @@ impl HuntyCore {
             reward_config,
             total_clues: 0, // Empty clue list initially
             required_clues: 0,
-            completed_count: 0,
+            max_submissions_per_minute,
         };
 
         // Store the hunt
@@ -592,6 +599,8 @@ impl HuntyCore {
     /// * `clue_id` - The clue ID to answer
     /// * `player` - The address of the player submitting the answer
     /// * `answer` - The plain-text answer submission
+    /// * `submission_nonce` - Caller-chosen unique nonce for this submission envelope
+    /// * `submitted_at` - Client timestamp captured when the submission was signed
     ///
     /// # Returns
     /// `Ok(())` on successful answer verification and progress update
@@ -603,6 +612,8 @@ impl HuntyCore {
     /// * `ClueNotFound` - Clue does not exist in this hunt
     /// * `ClueAlreadyCompleted` - Player has already completed this clue
     /// * `InvalidAnswer` - Submitted answer does not match the stored hash
+    /// * `DuplicateSubmission` - Submission nonce/timestamp envelope was already processed
+    /// * `SubmissionExpired` - Submission timestamp is too old or too far in the future
     ///
     /// # Events
     /// * `ClueCompleted` - Emitted when answer is correct
@@ -614,6 +625,8 @@ impl HuntyCore {
         clue_id: u32,
         player: Address,
         answer: String,
+        submission_nonce: u64,
+        submitted_at: u64,
     ) -> Result<(), HuntErrorCode> {
         // Require player authorization
         player.require_auth();
@@ -626,6 +639,33 @@ impl HuntyCore {
             return Err(HuntErrorCode::HuntNotActive);
         }
 
+        if Storage::is_banned(&env, hunt_id, &player) {
+            return Err(HuntErrorCode::BannedPlayer);
+        }
+
+        Self::validate_submission_timestamp(current_time, submitted_at)
+            .map_err(HuntErrorCode::from)?;
+        Self::assert_submission_not_replayed(
+            &env,
+            hunt_id,
+            clue_id,
+            &player,
+            submission_nonce,
+            submitted_at,
+            current_time,
+        )
+        .map_err(HuntErrorCode::from)?;
+
+        Storage::save_processed_submission(
+            &env,
+            hunt_id,
+            clue_id,
+            &player,
+            submission_nonce,
+            submitted_at,
+            submitted_at.saturating_add(ANSWER_SUBMISSION_WINDOW_SECS),
+        );
+
         let mut progress = Storage::get_player_progress(&env, hunt_id, &player)
             .ok_or(HuntErrorCode::PlayerNotRegistered)?;
 
@@ -635,10 +675,34 @@ impl HuntyCore {
             return Err(HuntErrorCode::ClueAlreadyCompleted);
         }
 
+        if hunt.max_submissions_per_minute > 0 {
+            let mut updated_submissions = Vec::new(&env);
+            for i in 0..progress.recent_submissions.len() {
+                let ts = progress.recent_submissions.get(i).unwrap();
+                if current_time < ts + 60 {
+                    updated_submissions.push_back(ts);
+                }
+            }
+            progress.recent_submissions = updated_submissions;
+
+            if progress.recent_submissions.len() >= hunt.max_submissions_per_minute {
+                let oldest_ts = progress.recent_submissions.get(0).unwrap();
+                let elapsed = current_time.saturating_sub(oldest_ts);
+                let cooldown_remaining = 60u64.saturating_sub(elapsed);
+                return Err(HuntErrorCode::from(HuntError::RateLimitExceeded {
+                    cooldown_remaining,
+                }));
+            }
+        }
+
         let submitted_hash =
             Self::normalize_and_hash_answer(&env, &answer).map_err(HuntErrorCode::from)?;
 
         if submitted_hash != clue.answer_hash {
+            if hunt.max_submissions_per_minute > 0 {
+                progress.recent_submissions.push_back(current_time);
+                Storage::save_player_progress(&env, &progress);
+            }
             // Answer is incorrect - emit analytics event and return error
             let incorrect_event = AnswerIncorrectEvent {
                 hunt_id,
@@ -653,7 +717,11 @@ impl HuntyCore {
             return Err(HuntErrorCode::InvalidAnswer);
         }
 
-        progress.complete_clue(&env, clue_id, clue.points);
+        progress.complete_clue(&env, clue_id, clue.points)?;
+
+        if hunt.max_submissions_per_minute > 0 {
+            progress.recent_submissions = Vec::new(&env);
+        }
 
         let all_required_completed =
             Self::check_all_required_clues_completed(&env, hunt_id, &progress);
@@ -663,13 +731,8 @@ impl HuntyCore {
             progress.is_completed = true;
             progress.completed_at = current_time;
 
-            // Emit HuntCompleted event with rank
-            // Increment completed count and obtain rank
-            let mut hunt_mut = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-            hunt_mut.completed_count += 1;
-            let rank = hunt_mut.completed_count;
-            // Save updated hunt before publishing event
-            Storage::save_hunt(&env, &hunt_mut);
+            // Rank is the number of already-completed players plus this player.
+            let rank = Self::completion_rank(&env, hunt_id);
             let hunt_completed_event = HuntCompletedEvent {
                 hunt_id,
                 player: player.clone(),
@@ -695,6 +758,71 @@ impl HuntyCore {
             (Symbol::new(&env, "ClueCompleted"), hunt_id, clue_id),
             clue_completed_event,
         );
+
+        Ok(())
+    }
+
+    fn completion_rank(env: &Env, hunt_id: u64) -> u32 {
+        let players = Storage::get_hunt_players(env, hunt_id);
+        let mut completed_players = 0u32;
+        for i in 0..players.len() {
+            let progress = players.get(i).unwrap();
+            if progress.is_completed {
+                completed_players += 1;
+            }
+        }
+        completed_players.saturating_add(1)
+    }
+
+    fn validate_submission_timestamp(
+        current_time: u64,
+        submitted_at: u64,
+    ) -> Result<(), HuntError> {
+        if submitted_at > current_time.saturating_add(ANSWER_SUBMISSION_FUTURE_SKEW_SECS) {
+            return Err(HuntError::SubmissionExpired {
+                submitted_at,
+                current_time,
+            });
+        }
+        if current_time.saturating_sub(submitted_at) > ANSWER_SUBMISSION_WINDOW_SECS {
+            return Err(HuntError::SubmissionExpired {
+                submitted_at,
+                current_time,
+            });
+        }
+        Ok(())
+    }
+
+    fn assert_submission_not_replayed(
+        env: &Env,
+        hunt_id: u64,
+        clue_id: u32,
+        player: &Address,
+        submission_nonce: u64,
+        submitted_at: u64,
+        current_time: u64,
+    ) -> Result<(), HuntError> {
+        if let Some(expires_at) = Storage::get_processed_submission_expiry(
+            env,
+            hunt_id,
+            clue_id,
+            player,
+            submission_nonce,
+            submitted_at,
+        ) {
+            if current_time <= expires_at {
+                return Err(HuntError::DuplicateSubmission { hunt_id, clue_id });
+            }
+
+            Storage::remove_processed_submission(
+                env,
+                hunt_id,
+                clue_id,
+                player,
+                submission_nonce,
+                submitted_at,
+            );
+        }
 
         Ok(())
     }
@@ -860,15 +988,17 @@ impl HuntyCore {
         for i in 0..players.len() {
             let p = players.get(i).unwrap();
             if p.is_completed {
-                completed_count += 1;
+                completed_count = completed_count.checked_add(1).ok_or(HuntErrorCode::ScoreOverflow)?;
             }
-            total_score_sum += p.total_score as u64;
+            total_score_sum = total_score_sum.checked_add(p.total_score as u64)
+                .ok_or(HuntErrorCode::ScoreOverflow)?;
         }
         let completion_rate_percent = if total_players > 0 {
-            completed_count
-                .checked_mul(100)
-                .and_then(|v| v.checked_div(total_players))
-                .unwrap_or(0)
+let completion_percentage =
+    completed_count
+        .checked_mul(100)
+        .ok_or(HuntErrorCode::ScoreOverflow)?
+        / total_players;
         } else {
             0
         };
@@ -888,38 +1018,158 @@ impl HuntyCore {
         })
     }
 
-    /// Returns the on-chain storage schema version (0 when uninitialized).
-    pub fn get_schema_version(env: Env) -> u32 {
-        migration::HuntyCoreMigration::get_schema_version(&env)
+// -----------------------------------------------------------------------------
+// View-Only Access Management
+// -----------------------------------------------------------------------------
+
+pub fn add_view_only_access(
+    env: Env,
+    hunt_id: u64,
+    creator: Address,
+    viewer: Address,
+) -> Result<(), HuntErrorCode> {
+    creator.require_auth();
+
+    let hunt = Storage::get_hunt(&env, hunt_id)
+        .ok_or(HuntErrorCode::HuntNotFound)?;
+
+    if hunt.creator != creator {
+        return Err(HuntErrorCode::Unauthorized);
     }
 
-    /// Initializes schema version tracking on deploy or first admin call.
-    pub fn initialize_schema(env: Env, admin: Address) {
-        admin.require_auth();
-        migration::HuntyCoreMigration::initialize_schema(&env);
+    Storage::add_view_only(&env, hunt_id, &viewer);
+    Ok(())
+}
+
+pub fn remove_view_only_access(
+    env: Env,
+    hunt_id: u64,
+    creator: Address,
+    viewer: Address,
+) -> Result<(), HuntErrorCode> {
+    creator.require_auth();
+
+    let hunt = Storage::get_hunt(&env, hunt_id)
+        .ok_or(HuntErrorCode::HuntNotFound)?;
+
+    if hunt.creator != creator {
+        return Err(HuntErrorCode::Unauthorized);
     }
 
-    /// Runs storage migrations up to `target_version`. Set `dry_run` to simulate without writes.
-    pub fn run_migration(env: Env, admin: Address, target_version: u32, dry_run: bool) -> migration::MigrationReport {
-        admin.require_auth();
-        migration::HuntyCoreMigration::run_migration(&env, target_version, dry_run)
+    Storage::remove_view_only(&env, hunt_id, &viewer);
+    Ok(())
+}
+
+pub fn is_view_only(env: Env, hunt_id: u64, address: Address) -> bool {
+    Storage::is_view_only(&env, hunt_id, &address)
+}
+
+pub fn get_view_only_list(env: Env, hunt_id: u64) -> Vec<Address> {
+    Storage::get_view_only_list(&env, hunt_id)
+}
+
+pub fn initialize_admin(
+    env: Env,
+    admin: Address,
+) -> Result<(), HuntErrorCode> {
+    admin.require_auth();
+
+    if Storage::get_admin(&env).is_some() {
+        return Err(HuntErrorCode::Unauthorized);
     }
 
-    /// Rolls back to the schema version captured before the last migration.
-    pub fn rollback_migration(env: Env, admin: Address) -> Option<migration::MigrationReport> {
-        migration::HuntyCoreMigration::rollback_migration(&env, admin)
+    Storage::set_admin(&env, &admin);
+    Ok(())
+}
+
+pub fn add_global_view_only(
+    env: Env,
+    admin: Address,
+    viewer: Address,
+) -> Result<(), HuntErrorCode> {
+    admin.require_auth();
+
+    let configured_admin =
+        Storage::get_admin(&env).ok_or(HuntErrorCode::Unauthorized)?;
+
+    if configured_admin != admin {
+        return Err(HuntErrorCode::Unauthorized);
     }
 
-    /// Returns contract health metrics for operator dashboards.
-    pub fn get_health_dashboard(env: Env) -> monitoring::ContractHealth {
-        monitoring::Monitoring::health_dashboard(&env)
+    Storage::add_global_view_only(&env, &viewer);
+    Ok(())
+}
+
+pub fn remove_global_view_only(
+    env: Env,
+    admin: Address,
+    viewer: Address,
+) -> Result<(), HuntErrorCode> {
+    admin.require_auth();
+
+    let configured_admin =
+        Storage::get_admin(&env).ok_or(HuntErrorCode::Unauthorized)?;
+
+    if configured_admin != admin {
+        return Err(HuntErrorCode::Unauthorized);
+    }
+
+    Storage::remove_global_view_only(&env, &viewer);
+    Ok(())
+}
+
+pub fn is_global_view_only(env: Env, address: Address) -> bool {
+    Storage::is_global_view_only(&env, &address)
+}
+
+pub fn get_global_view_only_list(env: Env) -> Vec<Address> {
+    Storage::get_global_view_only_list(&env)
+}
+
+// -----------------------------------------------------------------------------
+// Schema Migration & Monitoring
+// -----------------------------------------------------------------------------
+
+pub fn get_schema_version(env: Env) -> u32 {
+    migration::HuntyCoreMigration::get_schema_version(&env)
+}
+
+pub fn initialize_schema(env: Env, admin: Address) {
+    admin.require_auth();
+    migration::HuntyCoreMigration::initialize_schema(&env);
+}
+
+pub fn run_migration(
+    env: Env,
+    admin: Address,
+    target_version: u32,
+    dry_run: bool,
+) -> migration::MigrationReport {
+    admin.require_auth();
+    migration::HuntyCoreMigration::run_migration(
+        &env,
+        target_version,
+        dry_run,
+    )
+}
+
+pub fn rollback_migration(
+    env: Env,
+    admin: Address,
+) -> Option<migration::MigrationReport> {
+    migration::HuntyCoreMigration::rollback_migration(&env, admin)
+}
+
+pub fn get_health_dashboard(env: Env) -> monitoring::ContractHealth {
+    monitoring::Monitoring::health_dashboard(&env)
+}
     }
 }
 
 mod errors;
 mod migration;
 mod monitoring;
-mod sanitization;
+mod rate_limit;
 mod storage;
 pub mod types;
 
