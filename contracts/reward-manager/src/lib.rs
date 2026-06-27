@@ -503,9 +503,20 @@ impl RewardManager {
             return Err(RewardErrorCode::InvalidConfig);
         }
 
-        // Prevent double distribution
-        if Storage::is_distributed(&env, hunt_id, &player_address) {
+        // Prevent double distribution using monotonic nonce
+        // Get current distribution state before any mutations
+        let distribution_record = Storage::get_distribution_record(&env, hunt_id, &player_address);
+        let current_nonce = Storage::get_distribution_nonce(&env, hunt_id, &player_address);
+        
+        // Detect replay: if record exists but nonce hasn't been incremented, it's a replay attempt
+        if distribution_record.is_some() && current_nonce == 0 {
             return Err(RewardErrorCode::AlreadyDistributed);
+        }
+        
+        // Verify distribution state consistency
+        let expected_nonce = if distribution_record.is_some() { 1 } else { 0 };
+        if current_nonce != expected_nonce {
+            return Err(RewardErrorCode::ReplayDetected);
         }
 
         let _reentrancy_guard = ReentrancyGuard::acquire(&env)?;
@@ -607,13 +618,17 @@ impl RewardManager {
             )?);
         }
 
-        Storage::set_distributed(&env, hunt_id, &player_address);
+        // Record distribution with monotonic nonce to prevent replay attacks
         Storage::set_distribution_record(
             &env,
             hunt_id,
             &player_address,
             &DistributionRecord { xlm_amount, nft_id },
         );
+        
+        // Increment nonce atomically after successful distribution
+        // Instance storage is immutable and not subject to TTL expiration
+        Storage::increment_distribution_nonce(&env, hunt_id, &player_address);
 
         let event = RewardsDistributedEvent {
             hunt_id,

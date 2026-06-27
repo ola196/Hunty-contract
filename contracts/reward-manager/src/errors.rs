@@ -36,4 +36,7 @@ pub enum RewardErrorCode {
 
     /// The tracked pool balance diverged from the actual XLM token balance.
     PoolBalanceDivergence = 15,
+
+    /// Replay attack detected: distribution nonce state inconsistency.
+    ReplayDetected = 16,
 }

@@ -16,6 +16,7 @@ impl Storage {
     const DAILY_GLOBAL_DIST_KEY: soroban_sdk::Symbol = symbol_short!("DGDST");
     const DISTRIBUTION_KEY: soroban_sdk::Symbol = symbol_short!("DIST");
     const DIST_RECORD_KEY: soroban_sdk::Symbol = symbol_short!("DREC");
+    const DIST_NONCE_KEY: soroban_sdk::Symbol = symbol_short!("DNONCE");
     const POOL_KEY: soroban_sdk::Symbol = symbol_short!("POOL");
     const POOL_CFG_KEY: soroban_sdk::Symbol = symbol_short!("PCFG");
     const POOL_DEP_KEY: soroban_sdk::Symbol = symbol_short!("PDEP");
@@ -104,11 +105,35 @@ impl Storage {
         env.storage().persistent().get(&key)
     }
 
+    pub fn get_distribution_nonce(env: &Env, hunt_id: u64, player: &Address) -> u64 {
+        let key = Self::distribution_nonce_key(hunt_id, player);
+        env.storage().instance().get(&key).unwrap_or(0)
+    }
+
+    pub fn set_distribution_nonce(env: &Env, hunt_id: u64, player: &Address, nonce: u64) {
+        let key = Self::distribution_nonce_key(hunt_id, player);
+        env.storage().instance().set(&key, &nonce);
+    }
+
+    pub fn increment_distribution_nonce(env: &Env, hunt_id: u64, player: &Address) -> u64 {
+        let current_nonce = Self::get_distribution_nonce(env, hunt_id, player);
+        let new_nonce = current_nonce + 1;
+        Self::set_distribution_nonce(env, hunt_id, player, new_nonce);
+        new_nonce
+    }
+
     fn distribution_record_key(
         hunt_id: u64,
         player: &Address,
     ) -> (soroban_sdk::Symbol, u64, Address) {
         (Self::DIST_RECORD_KEY, hunt_id, player.clone())
+    }
+
+    fn distribution_nonce_key(
+        hunt_id: u64,
+        player: &Address,
+    ) -> (soroban_sdk::Symbol, u64, Address) {
+        (Self::DIST_NONCE_KEY, hunt_id, player.clone())
     }
 
     // ========== Reward Pool Balance (per hunt) ==========
